@@ -1,0 +1,18 @@
+defaults: 
+  - default_training_conf.yaml
+
+
+model: 
+  type: "BiDirectionalSTGNN"
+  kwargs: 
+    hidden_size: 64
+    n_layers: 1
+    dropout_p: 0.2
+    output_dist: LogNormal
+
+
+training: 
+    algo: 'RMSprop'
+    kwargs:
+      lr: 0.0001
+      momentum: 0.5

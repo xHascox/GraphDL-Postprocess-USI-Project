@@ -1,0 +1,12 @@
+defaults: 
+  - default_training_conf.yaml
+  
+model:
+  type: "WaveNet"
+  kwargs:
+    time_steps: ${add_one:${d_map.${nwp_model}}}
+    hidden_size: 64
+    ff_size: 64
+    n_layers: 4
+    spatial_kernel_size: 3
+    output_dist: LogNormal
