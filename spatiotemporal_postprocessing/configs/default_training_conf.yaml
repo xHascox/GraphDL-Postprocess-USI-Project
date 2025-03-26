@@ -72,7 +72,7 @@ training:
       eta_min: 0.000005
 
 logging:
-  mlflow_tracking_uri: ${oc.env_or:MLFLOW_TRACKING_URI, mlruns} # log locally 
+  mlflow_tracking_uri: ${oc.env:MLFLOW_TRACKING_URI, mlruns} # log locally 
   experiment_id: stgnn_wind_postproc
   
   
