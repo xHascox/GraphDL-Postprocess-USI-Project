@@ -1,4 +1,5 @@
 from einops import rearrange
+from numpy._core.numeric import False_
 import torch.nn as nn 
 import torch
 from typing import Literal
@@ -47,11 +48,12 @@ class LayeredGraphRNN(nn.Module):
         state = torch.zeros(batch_size, num_nodes, self.state_size, device=x.device)
 
         states = []
-        # iterate forwards or backwards in time
+        # iterate forwards or backwards in time 
         t0 = 0 if self.mode == 'forwards' else win_size - 1
         tn = win_size if self.mode == 'forwards' else -1 
         step = 1 if self.mode == 'forwards' else -1
-        
+        DEBUG = False_
+        if DEBUG: print(f"DEBUG {t0} {tn} {step}")
         for t in range(t0, tn, step):
             x_ = self.input_encoder(x[:,t])
 
@@ -68,28 +70,32 @@ class LayeredGraphRNN(nn.Module):
         
         return torch.stack(states, dim=1)
             
-            
+
+
 class BiDirectionalSTGNN(nn.Module):
-    def __init__(self, input_size, hidden_size, n_stations, output_dist: str, n_layers=1, dropout_p = 0.1, **kwargs) -> None:
+    def __init__(self, input_size, hidden_channels, n_stations, output_dist: str, num_layers=1, dropout_p = 0.1, kernel_size=None, causal_conv=None, **kwargs) -> None:
         super().__init__(**kwargs)
         
         
         
-        self.encoder = nn.Linear(input_size, hidden_size)
-        self.station_embeddings = NodeEmbedding(n_stations, hidden_size)
-        self.forward_model = LayeredGraphRNN(input_size=hidden_size, hidden_size=hidden_size, n_layers=n_layers, mode='forwards', dropout_p=dropout_p)
-        self.backward_model = LayeredGraphRNN(input_size=hidden_size, hidden_size=hidden_size, n_layers=n_layers, mode='backwards', dropout_p=dropout_p)
+        self.encoder = nn.Linear(input_size, hidden_channels)
+        self.station_embeddings = NodeEmbedding(n_stations, hidden_channels)
+        self.forward_model = LayeredGraphRNN(input_size=hidden_channels, hidden_size=hidden_channels, n_layers=num_layers, mode='forwards', dropout_p=dropout_p)
+        self.backward_model = LayeredGraphRNN(input_size=hidden_channels, hidden_size=hidden_channels, n_layers=num_layers, mode='backwards', dropout_p=dropout_p)
         
-        self.output_distr = dist_to_layer[output_dist](input_size=hidden_size)
+        self.output_distr = dist_to_layer[output_dist](input_size=hidden_channels)
             
-        self.skip_conn = nn.Linear(input_size, 2*hidden_size*n_layers)
+        self.skip_conn = nn.Linear(input_size, 2*hidden_channels*num_layers)
+        #self.skip_conn = nn.Linear(input_size, hidden_channels*num_layers) # TODO RM
+
         
         self.readout = nn.Sequential(
-            nn.Linear(2*hidden_size*n_layers, hidden_size),
-            BatchNorm(in_channels=hidden_size, track_running_stats=False),
+            nn.Linear(2*hidden_channels*num_layers, hidden_channels),
+            #nn.Linear(hidden_channels*num_layers, hidden_channels),
+            BatchNorm(in_channels=hidden_channels, track_running_stats=False),
             nn.SiLU(),
             nn.Dropout(p=dropout_p),
-            nn.Linear(hidden_size, hidden_size)
+            nn.Linear(hidden_channels, hidden_channels)
         )
         
         
@@ -100,12 +106,14 @@ class BiDirectionalSTGNN(nn.Module):
         states_forwards = self.forward_model(x, edge_index)  
         states_backwards = self.backward_model(x, edge_index)
         
+        # TODO
         states = torch.concatenate([states_forwards, states_backwards], dim=-1)
         states = states + self.skip_conn(x0) # skip conn 
         
         output = self.readout(states)
         
         return self.output_distr(output)
+    
     
     
 
@@ -162,4 +170,6 @@ class WaveNet(nn.Module):
         output = self.wavenet(x, edge_index)
         
         return self.output_distr(output)
+   
+
    
