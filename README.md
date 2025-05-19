@@ -23,18 +23,12 @@ Define the folder with the training data:
 
 ```sh
 export DATA_BASE_FOLDER=<FOLDER>
-
-
-
 ```
 
 Define the MLFlow tracking URI (defaults to a local folder called `mlruns`):
 
 ```sh
 export MLFLOW_TRACKING_URI=<URI>
-export MLFLOW_TRACKING_URI=mlflow
-export MLFLOW_TRACKING_URI="/teamspace/studios/this_studio/GraphDL-Postprocess-USI-Project/spatiotemporal_postprocessing/mlflow"
-
 ```
 
 Train with default settings:
@@ -58,10 +52,3 @@ python train.py ++training.optim.algo=SDG
 ```sh
 mlflow ui --port <PORT>
 ```
-
-
-Marco Notes:
-export DATA_BASE_FOLDER=../
-export MLFLOW_TRACKING_URI=mlflow
-from spatial dir
-mlflow ui --backend-store-uri ./mlflow --port 5000
