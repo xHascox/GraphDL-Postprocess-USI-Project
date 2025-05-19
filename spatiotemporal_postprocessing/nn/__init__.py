@@ -2,7 +2,6 @@ import sys
 
 from .models import BiDirectionalSTGNN, MLP, WaveNet
 from .prototypes import TCN_GNN
-from .prototypes import RNN_Model_1
 
 def get_model(model_type, **kwargs):
      
