@@ -30,6 +30,7 @@ scoringrules = "^0.7.1"
 seaborn = "^0.13.2"
 numcodecs = "^0.15.0"
 cartopy = "^0.24.1"
+optuna = "^3.6.0"
 
 [tool.poetry.group.dev.dependencies]
 mypy = "^1.10.0"
