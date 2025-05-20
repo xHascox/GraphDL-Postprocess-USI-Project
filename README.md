@@ -63,7 +63,7 @@ python train.py ++training.optim.algo=SDG
 
 4. **Train Specific Model**
 
-EnhancedGRUBaseline
+* EnhancedGRUBaseline
 
 ```sh
 cd GraphDL-Postprocess-USI-Project/spatiotemporal_postprocessing
@@ -72,7 +72,7 @@ export MLFLOW_TRACKING_URI=mlflow
 python train.py --config-name enhanced_baseline
 ```
 
-EnhancedBiDirectionalSTGNN: (targets.nc and features.nc in folder GraphDL-Postprocess-USI-Project)
+* EnhancedBiDirectionalSTGNN: (targets.nc and features.nc in folder GraphDL-Postprocess-USI-Project)
 
 ```sh
 cd GraphDL-Postprocess-USI-Project/spatiotemporal_postprocessing
@@ -81,11 +81,11 @@ export MLFLOW_TRACKING_URI=mlflow
 python train.py --config-name enhanced_bidirectional_rnn
 ```
 
-EnhancedTCNGNN
+* EnhancedTCNGNN
 
+Currently only supported in the Notebook (`spatiotemporal_postprocessing/notebooks/Baseline_and_TCN.ipynb`)
 
-
-MultiScaleGraphWaveNet
+* MultiScaleGraphWaveNet
 
 ```sh
 cd GraphDL-Postprocess-USI-Project/spatiotemporal_postprocessing
