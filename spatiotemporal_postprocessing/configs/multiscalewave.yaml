@@ -34,7 +34,7 @@ training:
   batch_size: 32
   loss: "MaskedCRPSLogNormal"
   gradient_clip_value: 1.0
-  epochs: 1
+  epochs: 100
   optim:
     algo: 'Adam'
     kwargs:
@@ -42,7 +42,7 @@ training:
       lr: 0.0001
       weight_decay: 0
   scheduler:
-    algo: 'CosineAnnealingWarmRestarts'
+    algo: 'OneCycleLR'
     kwargs: 
       T_0: 20
       T_mult: 2
@@ -52,9 +52,11 @@ training:
       step_gamma: 0.5
       gamma: 0.5
       exp_gamma: 0.9
-      max_lr: 0.01
+      max_lr: 0.001
       epochs: 100
       steps_per_epoch: 175
+      div_factor: 25
+      pct_start: 0.5
 
 logging:
   mlflow_tracking_uri: ${oc.env:MLFLOW_TRACKING_URI, mlruns} # log locally 
