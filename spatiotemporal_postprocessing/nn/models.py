@@ -9,29 +9,30 @@ from spatiotemporal_postprocessing.nn.probabilistic_layers import dist_to_layer
 from torch import Tensor
 from torch.nn import Parameter
 from torch_geometric.nn import inits
+from torch.nn.init import xavier_uniform_
 
 
 class LayeredGraphRNN(nn.Module):
-    def __init__(self, input_size, hidden_size, n_layers=1, dropout_p = 0.1, mode: Literal['forwards', 'backwards'] = 'forwards', **kwargs) -> None:
+    def __init__(self, input_size, hidden_channels, num_layers=1, dropout_p = 0.1, mode: Literal['forwards', 'backwards'] = 'forwards', **kwargs) -> None:
         super().__init__(**kwargs)
         layers_ = []
         
-        self.input_encoder = nn.Linear(input_size, hidden_size)
+        self.input_encoder = nn.Linear(input_size, hidden_channels)
         
-        for _ in range(n_layers):
-            layers_.append(GatedGraphNetwork(input_size=hidden_size*2,
-                                             output_size=hidden_size))
+        for _ in range(num_layers):
+            layers_.append(GatedGraphNetwork(input_size=hidden_channels*2,
+                                             output_size=hidden_channels))
 
         
         self.mp_layers = torch.nn.ModuleList(layers_)
-        self.state_size = hidden_size * n_layers
-        self.n_layers = n_layers
+        self.state_size = hidden_channels * num_layers
+        self.num_layers = num_layers
         self.mode = mode
         self.dropout = nn.Dropout(p=dropout_p)
             
     def iterate_layers(self, state, x, edge_index):
         output = []
-        state_ = rearrange(state, "b n ... (h l) -> l b n ... h", l=self.n_layers)
+        state_ = rearrange(state, "b n ... (h l) -> l b n ... h", l=self.num_layers)
         for l, layer in enumerate(self.mp_layers):
             state_in_ = state_[l]
             
@@ -51,12 +52,11 @@ class LayeredGraphRNN(nn.Module):
         state = torch.zeros(batch_size, num_nodes, self.state_size, device=x.device)
 
         states = []
-        # iterate forwards or backwards in time 
+        # iterate forwards or backwards in time
         t0 = 0 if self.mode == 'forwards' else win_size - 1
         tn = win_size if self.mode == 'forwards' else -1 
         step = 1 if self.mode == 'forwards' else -1
-        DEBUG = False_
-        if DEBUG: print(f"DEBUG {t0} {tn} {step}")
+        
         for t in range(t0, tn, step):
             x_ = self.input_encoder(x[:,t])
 
