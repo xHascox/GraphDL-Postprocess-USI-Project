@@ -5,11 +5,19 @@ import torch
 from typing import Literal
 from tsl.nn.layers import GatedGraphNetwork, NodeEmbedding, BatchNorm
 from tsl.nn.models import GraphWaveNetModel
-from spatiotemporal_postprocessing.nn.probabilistic_layers import dist_to_layer
+from spatiotemporal_postprocessing.nn.probabilistic_layers import dist_to_layer, LogNormalLayer
 from torch import Tensor
 from torch.nn import Parameter
 from torch_geometric.nn import inits
 from torch.nn.init import xavier_uniform_
+
+from typing import List, Optional
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.distributions import LogNormal
+from spatiotemporal_postprocessing.nn.msgwn_modules import *
 
 
 class LayeredGraphRNN(nn.Module):
@@ -305,3 +313,120 @@ class EnhancedBiDirectionalSTGNN(nn.Module):
         output = self.readout(states)
         
         return self.output_distr(output)
+
+
+
+
+
+
+
+################################################################################
+# ─────────────────── MSGWN main class (distribution‑aware) ────────────────────
+################################################################################
+class MultiScaleGraphWaveNet(nn.Module):
+    def __init__(self,
+                 n_stations: int,
+                 in_channels: int,
+                 history_len: int,
+                 horizon: int = 1, # only for point forecasts
+                 layers: int = 3,
+                 channels: int = 16,
+                 emb_dim: int = 16,
+                 node_emb_dim: int = 20,
+                 adj_matrix: Optional[np.ndarray] = None,
+                 learnable_adj: bool = True,
+                 kernels = (1, 3, 5, 7),
+                 dil = (1, 2, 4, 8),
+                 drop = 0.2,
+                 edge_drop_p = 0.2,
+                 history_dropout_p: float = 0.07,
+                 history_block:   int   = 12,
+                 dynamic=True,
+                 output_dist: Optional[str] = "LogNormal"):
+        super().__init__()
+        self.horizon = horizon
+        self.edge_drop_p = edge_drop_p
+        self.num_nodes = n_stations
+        # adjacency
+        self.node_embeddings = nn.Embedding(self.num_nodes, node_emb_dim) # node_emb_dim is a new hyperparameter
+        nn.init.xavier_uniform_(self.node_embeddings.weight)
+        if adj_matrix is not None and not learnable_adj:
+            self.register_buffer('A_fixed', torch.tensor(adj_matrix, dtype=torch.float32))
+            self.adj = None
+        else:
+            self.A_fixed = None
+            self.adj = LearnableAdjacency(self.num_nodes, emb_dim, init_A=adj_matrix)
+        # layers
+        #self.in_proj = nn.Conv2d(in_channels, channels, 1)
+
+        self.history_dropout = HistoryDropout(p=history_dropout_p,
+                                              block_size=history_block)
+        self.in_proj = nn.Conv2d(in_channels + node_emb_dim, channels, 1)
+        self.blocks = nn.ModuleList([STBlock(channels, channels, kernels, dil, drop, dynamic) for _ in range(layers)])
+        self.skip_proj = nn.Conv2d(layers*channels, channels, 1)
+        self.end1 = nn.Conv2d(channels, channels, 1)
+
+        # param projection (μ, σ) per horizon
+        out_dim = 2 * horizon if output_dist=='LogNormal' else horizon
+        self.param_conv = nn.Conv2d(channels, out_dim, 1)
+        self.output_dist = output_dist
+        if output_dist == 'LogNormal':
+            # project to model channels (distribution input size)
+            self.param_conv = nn.Conv2d(channels, channels, 1)
+            self.dist_layer = LogNormalLayer(input_size=channels)
+        else:
+            # point forecast: one output per horizon
+            self.param_conv = nn.Conv2d(channels, horizon, 1)
+
+    # supports helper
+    def _supports(self):
+        A = self.A_fixed if self.A_fixed is not None else self.adj()
+        return [A, A @ A]
+
+        # ---- insert edge-dropout here ------------------------------------
+        if self.training and self.edge_drop_p > 0:          # dropout only while training
+            mask = torch.bernoulli(A.new_full(A.shape, 1.0 - self.edge_drop_p))
+            A = A * mask                                    # zero out ~p fraction of edges
+        # ------------------------------------------------------------------
+
+        return [A, A @ A]      # first- and second-order supports
+
+    def forward(self, x):  # x: (B, C_in, N, T)
+        #x = x.permute(0, 3, 2, 1)
+
+        # --- START OF NODE EMBEDDING INTEGRATION ---
+        B, C_original, N, T = x.shape # Get dimensions from input
+        
+        # 1. Get node embeddings
+        node_idx = torch.arange(self.num_nodes, device=x.device)
+        n_emb = self.node_embeddings(node_idx)  # Shape: (N, node_emb_dim)
+        
+        # 2. Expand embeddings to match input tensor's batch and time dimensions
+        #    Target shape for n_emb: (B, node_emb_dim, N, T)
+        n_emb_expanded = n_emb.unsqueeze(0).unsqueeze(-1).expand(B, -1, -1, T)
+        n_emb_expanded = n_emb_expanded.permute(0, 2, 1, 3) # Permute to (B, node_emb_dim, N, T)
+
+        x = self.history_dropout(x)
+        # 3. Concatenate with original input features along the channel dimension
+        x_augmented = torch.cat([x, n_emb_expanded], dim=1) # Shape: (B, C_original + node_emb_dim, N, T)
+        # --- END OF NODE EMBEDDING INTEGRATION ---
+        
+        # Now, use x_augmented for the rest of the forward pass, starting with in_proj
+        supports = self._supports()
+        x = self.in_proj(x_augmented) # Pass the augmented features to in_pro
+        supports = self._supports()
+        #x = self.in_proj(x)
+        skips = []
+        for blk in self.blocks:
+            x, s = blk(x, supports)
+            skips.append(s)
+        x = F.relu(self.skip_proj(torch.cat(skips, dim=1)))
+        x = F.relu(self.end1(x))
+        params = self.param_conv(x)    # (B,out_dim,N,T)
+        if self.output_dist=='LogNormal':
+            # shape to (B,N,T,2)
+            params = params.permute(0,2,3,1)
+            return self.dist_layer(params)
+        else:
+            out = params.squeeze(1)     # (B,N,T)
+            return out.permute(0,2,1)   # (B,T,N)
