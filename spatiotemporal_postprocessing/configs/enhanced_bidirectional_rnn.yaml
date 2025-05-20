@@ -1,0 +1,44 @@
+defaults: 
+  - default_training_conf.yaml
+
+
+model: 
+  type: "EnhancedBiDirectionalSTGNN"
+  kwargs: 
+    hidden_channels: 32
+    num_layers: 2
+    dropout_p: 0.2
+    output_dist: LogNormal
+    
+
+training: 
+  batch_size: 32
+  loss: "MaskedCRPSLogNormal"
+  gradient_clip_value: 1.0
+  epochs: 100
+  optim:
+    algo: 'Adam'
+    kwargs:
+      betas: "(0.9, 0.999)"
+      lr: 0.0001
+      weight_decay: 0
+  scheduler:
+    algo: 'CosineAnnealingWarmRestarts'
+    kwargs: 
+      T_0: 20
+      T_mult: 2
+      eta_min: 0.000005
+      step_size: 1
+      t_max: 100
+      step_gamma: 0.5
+      gamma: 0.5
+      exp_gamma: 0.9
+      max_lr: 0.01
+      epochs: 100
+      steps_per_epoch: 175
+
+logging:
+  mlflow_tracking_uri: ${oc.env:MLFLOW_TRACKING_URI, mlruns} # log locally 
+  experiment_id: BiDir_stgnn_wind_postproc_HYPS
+
+  

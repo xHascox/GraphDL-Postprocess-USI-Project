@@ -47,8 +47,27 @@ Overwrite (if existing) or append (if not existing) a config value, such as the 
 python train.py ++training.optim.algo=SDG
 ```
 
-4. **Check the logs on MLflow:**
+4. Train Specific Model
+
+EnhancedBiDirectionalSTGNN:
+
+```
+cd GraphDL-Postprocess-USI-Project/spatiotemporal_postprocessing
+export DATA_BASE_FOLDER=../
+export MLFLOW_TRACKING_URI=mlflow    
+python train_lovnesh.py --config-name enhanced_bidirectional_rnn
+```
+
+
+
+
+5. **Check the logs on MLflow:**
 
 ```sh
-mlflow ui --port <PORT>
+cd GraphDL-Postprocess-USI-Project/spatiotemporal_postprocessing
+export MLFLOW_TRACKING_URI=mlflow    
+mlflow ui --backend-store-uri ./mlflow --port 5000
 ```
+
+
+

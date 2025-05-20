@@ -6,6 +6,9 @@ from typing import Literal
 from tsl.nn.layers import GatedGraphNetwork, NodeEmbedding, BatchNorm
 from tsl.nn.models import GraphWaveNetModel
 from spatiotemporal_postprocessing.nn.probabilistic_layers import dist_to_layer
+from torch import Tensor
+from torch.nn import Parameter
+from torch_geometric.nn import inits
 
 
 class LayeredGraphRNN(nn.Module):
@@ -172,4 +175,133 @@ class WaveNet(nn.Module):
         return self.output_distr(output)
    
 
-   
+# Adapted from https://torch-spatiotemporal.readthedocs.io/en/latest/_modules/tsl/nn/layers/norm/layer_norm.html#LayerNorm
+class LayerNorm(torch.nn.Module):
+    r"""Applies layer normalization.
+
+    Args:
+        in_channels (int): Size of each input sample.
+        eps (float, optional): A value added to the denominator for numerical
+            stability. (default: :obj:`1e-5`)
+        affine (bool, optional): If set to :obj:`True`, this module has
+            learnable affine parameters :math:`\gamma` and :math:`\beta`.
+            (default: :obj:`True`)
+    """
+
+    def __init__(self, in_channels, eps=1e-5, affine=True):
+        super().__init__()
+
+        self.in_channels = in_channels
+        self.eps = eps
+
+        if affine:
+            self.weight = Parameter(torch.Tensor(in_channels))
+            self.bias = Parameter(torch.Tensor(in_channels))
+        else:
+            self.register_parameter('weight', None)
+            self.register_parameter('bias', None)
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        inits.ones(self.weight)
+        inits.zeros(self.bias)
+
+    def forward(self, x: Tensor) -> Tensor:
+        """"""
+        mean = torch.mean(x, dim=-1, keepdim=True)
+
+        std = torch.std(x, dim=-1, unbiased=False, keepdim=True) 
+         # NOTE here we get some inf values, so this fixes it
+         # NOTE max has to be 1e18 at least, performance is worse if it is too small
+        std = torch.clamp(std, min=1e-8, max=1e19)
+
+        out = (x - mean) / (std + self.eps)
+
+        if self.weight is not None and self.bias is not None:
+            out = out * self.weight + self.bias
+
+        return out
+
+    def __repr__(self):
+        return f'{self.__class__.__name__}({self.in_channels})'
+
+
+class EnhancedBiDirectionalSTGNN(nn.Module):
+    def __init__(self, input_size, hidden_channels, n_stations, output_dist: str,
+                 num_layers=1, dropout_p=0.1, kernel_size=None, causal_conv=None,  **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.n_stations = n_stations
+
+        # Linear layer to encode input features to hidden channels
+        self.encoder = nn.Linear(input_size, hidden_channels)
+
+        # Xavier Initialization of Station Embeddings
+        embedding_init = torch.empty(n_stations, hidden_channels)
+        xavier_uniform_(embedding_init)
+        self.station_embeddings = NodeEmbedding(n_stations, hidden_channels, initializer=embedding_init)
+        
+        # Forward and backward Layered Graph RNN models (the "Bi-Directional" in the name)
+        self.forward_model = LayeredGraphRNN(input_size=hidden_channels, hidden_channels=hidden_channels, num_layers=num_layers, mode='forwards', dropout_p=dropout_p)
+        self.backward_model = LayeredGraphRNN(input_size=hidden_channels, hidden_channels=hidden_channels, num_layers=num_layers, mode='backwards', dropout_p=dropout_p)
+
+        # Layer normalization and attention for temporal features, starting from here we need 
+        # shape 2*hidden_channels*num_layers because of the bidirectional layers.
+        #self.temporal_ln = nn.LayerNorm(2*hidden_channels*num_layers, eps=1e-4)
+        self.temporal_ln = LayerNorm(2*hidden_channels*num_layers, eps=1e-4) # NOTE: Default tsl implementation leads to errors
+        self.temporal_attn = nn.MultiheadAttention(2*hidden_channels*num_layers, num_heads=4, batch_first=True)
+
+        self.gate = nn.Linear(2*hidden_channels*num_layers, 2*hidden_channels*num_layers)
+        
+        self.skip_conn = nn.Linear(input_size, 2*hidden_channels*num_layers)
+        
+        # Layer normalization and attention for spatial features (stations)
+        self.station_ln = nn.LayerNorm(2*hidden_channels*num_layers)
+        self.station_attn = nn.MultiheadAttention(2*hidden_channels*num_layers, num_heads=2, batch_first=True)
+        
+        # Readout layer: Here we change back to shape hidden_channels from 2*hidden_channels*num_layers
+        self.readout = nn.Sequential(
+            nn.Linear(2*hidden_channels*num_layers, hidden_channels),
+            BatchNorm(in_channels=hidden_channels, track_running_stats=False),
+            nn.SiLU(),
+            nn.Dropout(p=dropout_p),
+            nn.Linear(hidden_channels, hidden_channels)
+        )
+        
+        self.output_distr = dist_to_layer[output_dist](input_size=hidden_channels)
+        
+    def forward(self, x, edge_index):
+        B, T, N, C = x.shape
+        x0 = x
+
+        x = self.encoder(x)
+        x = x + self.station_embeddings()
+
+        states_forwards = self.forward_model(x, edge_index)  
+        states_backwards = self.backward_model(x, edge_index)
+        states = torch.concatenate([states_forwards, states_backwards], dim=-1)
+        states = states + self.skip_conn(x0)
+
+        # Rearrange states for temporal attention
+        states = rearrange(states, 'b t n c -> (b n) t c')
+        states = self.temporal_ln(states)
+        attn_out, _ = self.temporal_attn(states, states, states)
+        states = states + attn_out
+        
+        # Apply gating mechanism and another skip connection
+        gate = torch.sigmoid(self.gate(states))
+        skip = self.skip_conn(rearrange(x0, 'b t n f -> (b n) t f'))
+        states = gate * states + (1 - gate) * skip
+        
+        # Spatial attention
+        states2 = rearrange(states, '(b n) t c -> (b t) n c', b=B, n=N)
+        states2 = self.station_ln(states2)
+        stat_out, _ = self.station_attn(states2, states2, states2)
+        stat_out = rearrange(stat_out, '(b t) n c -> b t n c', b=B, t=T)
+
+        states = rearrange(states, '(b n) t c -> b t n c', n=N)
+        states = states + stat_out
+        
+        output = self.readout(states)
+        
+        return self.output_distr(output)
