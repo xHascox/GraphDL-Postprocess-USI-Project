@@ -3,6 +3,7 @@ import mlflow
 import numpy as np
 import torch 
 import os
+from torch.utils.data import DataLoader
 
 def mask_anomalous_targets(y, min_speed, max_speed):
     squeezed = (y.squeeze(-1) if y.dim()==4 else y)
@@ -63,13 +64,6 @@ def log_prediction_plots(x, y, pred_dist, example_indices, stations, epoch, inpu
 
     mlflow.log_artifact(plot_filename)
 
-
-
-import os
-import torch
-import numpy as np
-import matplotlib.pyplot as plt
-from torch.utils.data import DataLoader
 
 def plot_rank_histogram(
     model,
