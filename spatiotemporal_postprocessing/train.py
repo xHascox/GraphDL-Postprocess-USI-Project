@@ -19,6 +19,7 @@ from optuna.samplers import GridSampler
 from tqdm import tqdm
 import random
 from train_multiscalewave import train_multigraphwavenet, validate_multigraphwavenet
+from test_multiscalewave import test_graph_wavenet
 
 MASK_ANOM = False # Set to True to Mask Anomalous Targets
 checkpoint_dir = "./checkpoints"
@@ -351,7 +352,7 @@ def app(cfg: DictConfig) -> float:
                 save_checkpoint(epoch, model, optimizer, checkpoint_dir, name=cfg.model.type)
 
         if cfg.model.type == "MultiScaleGraphWaveNet":
-            pass # TODO
+            test_graph_wavenet(model, cfg.dataset.features_pth, cfg.dataset.targets_pth, cfg.model.kwargs, cfg.graph_kwargs, cfg.model.type)
         else:
             evaluate(cfg, model) # This runs the Test Set
 

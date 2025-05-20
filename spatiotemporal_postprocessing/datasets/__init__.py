@@ -1,1 +1,1 @@
-from .datasets import XarrayDataset, get_datamodule
+from .datasets import XarrayDataset, get_datamodule, get_datamodule_anomalous

@@ -69,7 +69,7 @@ export MLFLOW_TRACKING_URI=mlflow
 python train.py --config-name enhanced_bidirectional_rnn
 ```
 
-muliscalewave
+MultiScaleGraphWaveNet
 
 ```sh
 cd GraphDL-Postprocess-USI-Project/spatiotemporal_postprocessing
