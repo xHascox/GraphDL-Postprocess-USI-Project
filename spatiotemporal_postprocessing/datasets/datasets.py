@@ -70,7 +70,7 @@ class XarrayDataset(Dataset):
     
     
     
-def get_graph(lat, lon, knn=10, threshold=None):
+def get_graph(lat, lon, knn=10, threshold=None, theta=None):
     
     def haversine(lat1, lon1, lat2, lon2, radius=6371):
         import math
@@ -100,12 +100,23 @@ def get_graph(lat, lon, knn=10, threshold=None):
             dist[j,i] = d
             
     def gaussian_kernel(x, theta=None):
-        if theta is None:
+        if theta is None or theta == "std":
             theta = x.std()
+        elif theta == "median":
+            # extract strictly off-diagonal entries
+            i, j = np.triu_indices(dist.shape[0], k=1)
+            d_off = dist[i, j]
+            theta = np.median(d_off)
+        elif theta == "factormedian":
+            # extract strictly off-diagonal entries
+            i, j = np.triu_indices(dist.shape[0], k=1)
+            d_off = dist[i, j]
+            theta = np.median(d_off)*0.5
+        print(type(theta), type(x))
         weights = np.exp(-np.square(x / theta))
         return weights
     
-    adj = gaussian_kernel(dist)
+    adj = gaussian_kernel(dist, theta)
     
     adj = top_k(adj,knn, include_self=True,keep_values=True)
     
