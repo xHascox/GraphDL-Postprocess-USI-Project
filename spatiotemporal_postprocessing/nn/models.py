@@ -687,6 +687,8 @@ class EnhancedGRUBaseline(nn.Module):
         attn_heads: int = 4,
         station_heads: int = 2,
         max_lead: int = 96,
+        kernel_size=None, 
+        causal_conv=None,
     ):
         super().__init__()
         # station embeddings

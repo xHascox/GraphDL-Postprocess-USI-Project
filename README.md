@@ -4,6 +4,7 @@ Project designed for the [Graph Deep Learning](https://search.usi.ch/en/courses/
 
 <img src="./imgs/wind_stations.png" alt="Description" width="600">
 
+
 ## Quickstart
 
 0. **Install Poetry**
@@ -47,6 +48,8 @@ Train with default settings:
 python train.py
 ```
 
+:warning: Some arguments in the config files might currently get overwritten with values from inside the `get_search_space()` function in `train.py`, which is used for Hyperparameter Search.
+
 Train with a different config:
 ```sh
 python train.py --config-name <CFG>
@@ -62,6 +65,13 @@ python train.py ++training.optim.algo=SDG
 
 EnhancedGRUBaseline
 
+```sh
+cd GraphDL-Postprocess-USI-Project/spatiotemporal_postprocessing
+export DATA_BASE_FOLDER=../
+export MLFLOW_TRACKING_URI=mlflow    
+python train.py --config-name enhanced_baseline
+```
+
 EnhancedBiDirectionalSTGNN: (targets.nc and features.nc in folder GraphDL-Postprocess-USI-Project)
 
 ```sh
@@ -72,6 +82,8 @@ python train.py --config-name enhanced_bidirectional_rnn
 ```
 
 EnhancedTCNGNN
+
+
 
 MultiScaleGraphWaveNet
 
@@ -93,5 +105,7 @@ export MLFLOW_TRACKING_URI=mlflow
 mlflow ui --backend-store-uri ./mlflow --port 5000
 ```
 
+6. **Alternatively, we also provide notebooks for the Baseline, EnhancedTCN and MultiScaleGraphWaveNet**
 
+The notebooks can be run independently (they install all dependencies). If used within a prebuilt environment with poetry, the installations can be skipped.
 
