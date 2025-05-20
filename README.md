@@ -6,6 +6,17 @@ Project designed for the [Graph Deep Learning](https://search.usi.ch/en/courses/
 
 ## Quickstart
 
+0. **Install Poetry**
+
+Use Python 3.11.0 or other compatible Version
+
+```sh 
+pip3 install poetry
+poetry self add poetry-plugin-shell
+
+```
+
+
 1. **Install the dependencies:**
 ```sh 
 poetry install
@@ -47,15 +58,15 @@ Overwrite (if existing) or append (if not existing) a config value, such as the 
 python train.py ++training.optim.algo=SDG
 ```
 
-4. Train Specific Model
+4. **Train Specific Model**
 
-EnhancedBiDirectionalSTGNN:
+EnhancedBiDirectionalSTGNN: (targets.nc and features.nc in folder GraphDL-Postprocess-USI-Project)
 
-```
+```sh
 cd GraphDL-Postprocess-USI-Project/spatiotemporal_postprocessing
 export DATA_BASE_FOLDER=../
 export MLFLOW_TRACKING_URI=mlflow    
-python train_lovnesh.py --config-name enhanced_bidirectional_rnn
+python train.py --config-name enhanced_bidirectional_rnn
 ```
 
 
