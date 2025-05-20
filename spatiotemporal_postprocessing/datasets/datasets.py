@@ -223,6 +223,89 @@ def get_datamodule(ds: xr.Dataset,
                                      test_dataset=XarrayDataset(input_data=test_input_data, target_data=test_target_data))                        
 
 
+class XarrayDatasetAnomalous(Dataset):
+    def __init__(self, input_data, target_data, anomalous=False):
+
+        self.input_data, self.input_denormalizer = self.normalize(np.transpose(input_data.to_array().data, (1,2,3,0)))
+
+        # NOTE No transformation is applied to targets. If normalized ~(0,1), they can be negatve
+        # which is incompatible with CRPS_LogNormal.
+        if not anomalous:
+            self.target_data, self.target_denormalizer = np.transpose(target_data.to_array().data, (1,2,3,0)), lambda x : x
+        else:
+        # load raw targets
+        # anomalous data
+            raw_y = np.transpose(target_data.to_array().data, (1,2,3,0))
+            # mask out-of-range values
+            clean_y = self.mask_anomalous_targets(
+                torch.from_numpy(raw_y).float(),
+                min_speed=0.2,
+                max_speed=10.0
+            ).numpy()  # still shape (t, l, s, 1) or (t,l,s)
+    
+            self.target_data = clean_y
+            self.target_denormalizer = lambda x: x
+            print("masked anomalous data")
+
+
+        self.t, self.l, self.s, self.f = self.input_data.shape
+        self.tg = self.target_data.shape[-1]
+
+    def normalize(self, data):
+        data_mean = np.nanmean(data, axis=(0, 1, 2), keepdims=True)
+        data_std = np.nanstd(data, axis=(0, 1, 2), keepdims=True)
+        standardized_data = (data - data_mean) / data_std
+
+        def denormalizer(x): # closure (alternative: use a partial)
+            if isinstance(x, torch.Tensor):
+                return (x * torch.Tensor(data_std).to(x.device)) + torch.Tensor(data_mean).to(x.device)
+            return (x * data_std) + data_mean
+
+        return standardized_data, denormalizer
+
+    def mask_anomalous_targets(self, y, min_speed, max_speed):
+        squeezed = (y.squeeze(-1) if y.dim()==4 else y)
+        bad = (squeezed < min_speed) | (squeezed > max_speed) | torch.isnan(squeezed)
+        y_clean = squeezed.clone()
+        y_clean[bad] = float('nan')
+        return y_clean.unsqueeze(-1) if y.dim()==4 else y_clean
+
+    def get_baseline_score(self, score_fn):
+        pass
+
+    @property
+    def stations(self):
+        return self.s
+
+    @property
+    def forecasting_times(self):
+        return self.t
+
+    @property
+    def lead_times(self):
+        return self.l
+
+    @property
+    def features(self):
+        return self.f
+
+    @property
+    def targets(self):
+        return self.tg
+
+    def __len__(self):
+        return self.input_data.shape[0]  # Number of forecast_reference_time
+
+    def __getitem__(self, idx):
+        sample_x = self.input_data[idx]
+        sample_y = self.target_data[idx]
+        return torch.tensor(sample_x, dtype=torch.float), torch.tensor(sample_y, dtype=torch.float)
+
+
+    def __str__(self):
+        return f"Dataset: [time={self.t}, lead_time={self.l}, stations={self.s}, features={self.f}] | target dim={self.tg}\n"
+
+
 
 class PostprocessDatamoduleAnomalous():
     def __init__(self, train_dataset: XarrayDataset,
@@ -315,10 +398,10 @@ def get_datamodule_anomalous(ds: xr.Dataset,
         lat = ds.latitude.data
         lon = ds.longitude.data
         adj_matrix = get_graph(lat=lat, lon=lon, **graph_kwargs)
-        return PostprocessDatamoduleAnomalous(train_dataset=XarrayDataset(input_data=train_input_data, target_data=train_target_data, anomalous=anomalous),
-                                     val_dataset=XarrayDataset(input_data=val_input_data, target_data=val_target_data,anomalous=anomalous),
-                                     test_dataset=XarrayDataset(input_data=test_input_data, target_data=test_target_data, anomalous=anomalous),
+        return PostprocessDatamoduleAnomalous(train_dataset=XarrayDatasetAnomalous(input_data=train_input_data, target_data=train_target_data, anomalous=anomalous),
+                                     val_dataset=XarrayDatasetAnomalous(input_data=val_input_data, target_data=val_target_data,anomalous=anomalous),
+                                     test_dataset=XarrayDatasetAnomalous(input_data=test_input_data, target_data=test_target_data, anomalous=anomalous),
                                      adj_matrix=adj_matrix)
-    return PostprocessDatamoduleAnomalous(train_dataset=XarrayDataset(input_data=train_input_data, target_data=train_target_data,anomalous=anomalous),
-                                     val_dataset=XarrayDataset(input_data=val_input_data, target_data=val_target_data,anomalous=anomalous),
-                                     test_dataset=XarrayDataset(input_data=test_input_data, target_data=test_target_data,anomalous=anomalous))
+    return PostprocessDatamoduleAnomalous(train_dataset=XarrayDatasetAnomalous(input_data=train_input_data, target_data=train_target_data,anomalous=anomalous),
+                                     val_dataset=XarrayDatasetAnomalous(input_data=val_input_data, target_data=val_target_data,anomalous=anomalous),
+                                     test_dataset=XarrayDXarrayDatasetAnomalousataset(input_data=test_input_data, target_data=test_target_data,anomalous=anomalous))
