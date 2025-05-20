@@ -22,6 +22,9 @@ model:
 graph_kwargs:
   knn: 5
   threshold: 0.6
+  theta: "std"
+
+seed: 0
 
 dataset:
   hours_leadtime: "${d_map.${nwp_model}}" # Depends on nwp model 
