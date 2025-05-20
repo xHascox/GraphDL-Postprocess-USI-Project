@@ -134,3 +134,26 @@ def plot_rank_histogram(
     plt.close(fig)
     mlflow.log_artifact(outpath)
     print(f"Saved rank histograms to {outpath}")
+
+
+def load_checkpoint(model, optimizer, checkpoint_path):
+    checkpoint = torch.load(checkpoint_path)
+
+    model.load_state_dict(checkpoint['model_state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    epoch = checkpoint['epoch']
+    
+    print(f'Model loaded from {checkpoint_path}, starting at epoch {epoch}')
+    return model, optimizer, epoch
+
+def save_checkpoint(epoch, model, optimizer, checkpoint_dir, name=""):
+    # Save model and optimizer state dicts
+    checkpoint_path = os.path.join(checkpoint_dir, f'model_{name}_epoch_{epoch}.pt')
+    torch.save({
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+    }, checkpoint_path)
+    mlflow.log_artifact(checkpoint_path, artifact_path='checkpoints')
+
+    print(f'Model saved to {checkpoint_path}')
