@@ -316,6 +316,171 @@ class EnhancedBiDirectionalSTGNN(nn.Module):
 
 
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from einops import rearrange, repeat
+from einops.layers.torch import Rearrange
+from tsl.nn.layers import GatedGraphNetwork, BatchNorm
+
+class CausalConv1d(nn.Conv1d):
+    """Causal convolution with padding=(kernel_size−1)*dilation on the left."""
+    def __init__(self, in_channels, out_channels, kernel_size, dilation=1, **kwargs):
+        super().__init__(in_channels, out_channels,
+                         kernel_size=kernel_size,
+                         padding=0,
+                         dilation=dilation,
+                         **kwargs)
+        self._padding = (kernel_size - 1) * dilation
+
+    def forward(self, x):
+        # pad only on the left
+        x = F.pad(x, (self._padding, 0))
+        return super().forward(x)
+
+
+class EnhancedTCNGNN(nn.Module):
+    """
+    Enhanced TCN and GNN spatiotemporal backbone.
+
+    This model begins by learning a distinct embedding for each weather station and for each
+    forecast horizon, which are added to the initial input projections. By giving the network
+    explicit station and time step embeddings it can learn location specific biases (e.g. alpine
+    versus lowland) and dynamically adjust its treatment of near term versus long term lead
+    times across the full 96 hour window.
+
+    In each dilated TCN layer we follow the causal convolution with BatchNorm and a ReLU,
+    then fuse its output via a residual connection. Between every TCN block and the GNN
+    message passing we reshape via einops so the graph sees a clean [B, T, N, C] tensor.
+    After stacking these TCN and GNN blocks we apply a temporal LayerNorm and full
+    multi head self attention along the time axis. This combination stabilizes training,
+    allows arbitrarily deep receptive fields, and via attention lets the model reweight
+    past and future time steps beyond fixed dilation patterns.
+
+    To prevent over reliance on deep representations we compute a learned sigmoid gate
+    that interpolates between the self attended features and a linear skip projection of
+    the raw inputs. Finally we reshape back to [B, T, N, C] and apply a second
+    multi head attention across the station dimension, discovering non local spatial
+    dependencies that a fixed distance based graph might miss.
+    """
+    def __init__(
+        self,
+        input_size: int,
+        hidden_channels: int,
+        output_dist: str,
+        n_stations: int,
+        num_layers: int = 4,
+        kernel_size: int = 3,
+        dropout_p: float = 0.2,
+        causal_conv: bool = True,
+        attn_heads: int = 4,
+        station_heads: int = 2,
+        max_lead: int = 96,
+    ):
+        super().__init__()
+        # embeddings
+        self.station_emb = nn.Embedding(n_stations, hidden_channels)
+        self.horizon_emb = nn.Embedding(max_lead + 1, hidden_channels)
+
+        # initial encoder
+        self.input_proj = nn.Linear(input_size, hidden_channels)
+
+        # einops helpers
+        self.to_tcn    = Rearrange('b t n c -> (b n) c t', n=n_stations)
+        self.from_tcn  = Rearrange('(b n) c t -> (b n) t c', n=n_stations)
+        self.unflatten = Rearrange('(b n) t c -> b t n c', n=n_stations)
+
+        self.tcn_layers  = nn.ModuleList()
+        self.norm_layers = nn.ModuleList()
+        self.gnn_layers  = nn.ModuleList()
+        for l in range(num_layers):
+            in_ch  = hidden_channels
+            out_ch = hidden_channels
+            conv = (CausalConv1d(in_ch, out_ch, kernel_size, dilation=2**l)
+                    if causal_conv
+                    else nn.Conv1d(in_ch, out_ch, kernel_size,
+                                   padding=(kernel_size-1)//2,
+                                   dilation=2**l))
+            self.tcn_layers.append(conv)
+            self.norm_layers.append(nn.BatchNorm1d(out_ch))
+            self.gnn_layers.append(GatedGraphNetwork(input_size=out_ch,
+                                                     output_size=out_ch))
+
+        self.temporal_ln   = nn.LayerNorm(hidden_channels)
+        self.temporal_attn = nn.MultiheadAttention(hidden_channels,
+                                                   num_heads=attn_heads,
+                                                   batch_first=True)
+
+        self.gate      = nn.Linear(hidden_channels, hidden_channels)
+        self.skip_proj = nn.Linear(input_size, hidden_channels)
+
+        self.station_ln   = nn.LayerNorm(hidden_channels)
+        self.station_attn = nn.MultiheadAttention(hidden_channels,
+                                                  num_heads=station_heads,
+                                                  batch_first=True)
+
+        # output head
+        self.output_distr = dist_to_layer[output_dist](input_size=hidden_channels)
+
+    def forward(self, x, edge_index):
+        B, T, N, C = x.shape
+
+        h = self.to_tcn(x)
+
+        ids      = repeat(torch.arange(N, device=x.device),
+                          'n -> b n', b=B)
+        ids      = rearrange(ids, 'b n -> (b n)')
+        stat_emb = self.station_emb(ids)
+        stat_emb = stat_emb.unsqueeze(-1).expand(-1, -1, T)
+
+
+        h_proj = self.input_proj(rearrange(h, 'bn f t -> bn t f'))
+        h = rearrange(h_proj, 'bn t h -> bn h t')
+        h = h + stat_emb
+
+        skips = []
+        for tcn, bn, gnn in zip(self.tcn_layers,
+                                self.norm_layers,
+                                self.gnn_layers):
+            # TCN
+            res = h
+            h   = tcn(h)
+            h   = bn(h)
+            h   = F.relu(h)
+            h   = h + res
+            skips.append(h)
+
+            h_seq = self.unflatten(self.from_tcn(h))
+            # GNN
+            h_seq = gnn(h_seq, edge_index)
+            h = self.to_tcn(h_seq)
+
+        h = sum(skips)
+        h = self.unflatten(self.from_tcn(h))
+
+        h = rearrange(h, 'b t n h -> (b n) t h')
+        h = self.temporal_ln(h)
+        attn_out, _ = self.temporal_attn(h, h, h)
+        h = h + attn_out
+
+        raw  = rearrange(x, 'b t n f -> (b n) t f')
+        skip = self.skip_proj(raw)
+        gate = torch.sigmoid(self.gate(h))
+        h    = gate * h + (1 - gate) * skip
+
+        steps = repeat(torch.arange(T, device=x.device),
+                       't -> (b n) t', b=B, n=N)
+        h = h + self.horizon_emb(steps)
+
+        h2 = rearrange(h, '(b n) t h -> (b t) n h', b=B, n=N)
+        h2 = self.station_ln(h2)
+        stat_out, _ = self.station_attn(h2, h2, h2)
+        stat_out = rearrange(stat_out, '(b t) n h -> b t n h', b=B, t=T)
+
+        h = rearrange(h, '(b n) t h -> b t n h', b=B, n=N)
+        h = h + stat_out
+
+        return self.output_distr(h)
 
 
 
@@ -430,3 +595,191 @@ class MultiScaleGraphWaveNet(nn.Module):
         else:
             out = params.squeeze(1)     # (B,N,T)
             return out.permute(0,2,1)   # (B,T,N)
+
+
+##### MY MODEL BASELINE #####
+import torch
+import torch.nn as nn
+from einops import rearrange, repeat
+from einops.layers.torch import Rearrange
+
+class EnhancedGRUBaseline(nn.Module):
+    r"""
+    # EnhancedGRUBaseline
+
+    EnhancedGRUBaseline takes as input a tensor
+    $$
+      X \in \mathbb{R}^{B\times T\times N\times F}
+    $$
+    (batch size $B$, forecast length $T$, $N$ stations, $F$ features) and outputs a
+    LogNormal distribution over wind speeds at each station and lead time. Its key components:
+
+    We embed station identity via a learned matrix
+    $E\in\mathbb{R}^{N\times H}$, so that each station $s$ has embedding $e_s\in\mathbb{R}^H$.
+    Adding $e_s$ to the projected inputs breaks permutation invariance and lets the
+    network learn station‐specific biases (e.g.\ elevation effects).
+
+    Similarly we learn horizon embeddings
+    $$
+      h_\ell\in\mathbb{R}^H,\quad \ell=0,\dots,T-1,
+    $$
+    which are added after the gated‐skip block to encode the systematic decay of
+    forecast skill with lead time.
+
+    A linear layer
+    $$
+      W_{\mathrm{proj}}\!: \mathbb{R}^F\to\mathbb{R}^H
+    $$
+    projects raw predictors into a hidden space of dimension $H$.
+
+    We chose a bidirectional GRU because gated recurrent units efficiently capture
+    local temporal dynamics and handle vanishing gradients via update/reset gates.
+    Splitting the hidden size into $H/2$ forward and $H/2$ backward dimensions yields
+    a full state $h_t\in\mathbb{R}^H$ that integrates information from both past
+    and future within the window.
+
+    Immediately after the GRU we apply LayerNorm:
+    $$
+      \mathrm{LN}(z_t)=\gamma\frac{z_t-\mu_z}{\sigma_z}+\beta,
+    $$
+    which stabilizes training by normalizing across the feature dimension, reducing
+    internal covariate shift and allowing larger learning rates.
+
+    To capture long‐range dependencies, we add a temporal multi‐head attention block:
+    $$
+      \mathrm{Attn}(Q,K,V)
+      = \mathrm{softmax}\!\bigl(\tfrac{QK^\top}{\sqrt{H/A}}\bigr)\,V,
+    $$
+    with $A$ heads operating over the time axis.  This augments the GRU’s local
+    memory with global context, letting the model re‐weigh past events adaptively.
+
+    A gated residual skip then fuses this attention output $a_t$ with the original
+    projected input $p_t$ via
+    $$
+      g_t=\sigma(W_g a_t + b_g),\quad
+      h_t = g_t\odot a_t + (1-g_t)\odot p_t,
+    $$
+    which both preserves raw ensemble statistics and improves gradient flow.
+
+    We reshape back to $(B,T,N,H)$ and perform station‐axis self‐attention:
+    $$
+      \mathrm{Attn}\!\bigl(H_t\bigr),\quad H_t\in\mathbb{R}^{(B\,T)\times N\times H},
+    $$
+    so the model learns spatial correlations among stations in complex terrain.
+
+    Finally, a small linear “distribution head” outputs parameters
+    $(\mu,\sigma)$ for a LogNormal:
+    $$
+      \mu=W_\mu^\top h + b_\mu,\quad
+      \sigma=\mathrm{softplus}(W_\sigma^\top h + b_\sigma)+\varepsilon,
+    $$
+    ensuring $\sigma>0$.  Training minimizes the closed‐form CRPS for LogNormal
+    forecasts, which balances calibration and sharpness.
+    """
+    def __init__(
+        self,
+        input_size: int,
+        hidden_channels: int,
+        output_dist: str,
+        n_stations: int,
+        num_layers: int = 2,
+        dropout_p: float = 0.1,
+        attn_heads: int = 4,
+        station_heads: int = 2,
+        max_lead: int = 96,
+    ):
+        super().__init__()
+        # station embeddings
+        self.station_emb = nn.Embedding(n_stations, hidden_channels)
+
+        # time embeddings
+        self.horizon_emb = nn.Embedding(max_lead+1, hidden_channels)
+
+
+        # project raw features to hidden dim
+        self.input_proj = nn.Linear(input_size, hidden_channels)
+
+        self.gru = nn.GRU(
+            hidden_channels,
+            hidden_channels // 2,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=dropout_p if num_layers > 1 else 0.0,
+            bidirectional=True,
+        )
+
+        # layer‐norm on hidden
+        self.ln = nn.LayerNorm(hidden_channels)
+
+        # temporal self‐attention
+        self.attn = nn.MultiheadAttention(
+            embed_dim=hidden_channels,
+            num_heads=attn_heads,
+            batch_first=True
+        )
+
+        # gated residual skip
+        self.gate = nn.Linear(hidden_channels, hidden_channels)
+
+        # skip from raw inputs
+        self.skip_proj = nn.Linear(input_size, hidden_channels)
+
+        # station‐axis self‐attention
+        self.station_attn = nn.MultiheadAttention(
+            embed_dim=hidden_channels,
+            num_heads=station_heads,
+            batch_first=True
+        )
+
+        self.output_distr = dist_to_layer[output_dist](input_size=hidden_channels)
+
+        self.to_seq = Rearrange('b t n f -> (b n) t f')
+        self.from_seq = Rearrange('(b n) t h -> b t n h', n=n_stations)
+
+    def forward(self, x, edge_index=None):
+        """
+        x: [B, T, N, F]
+        returns a torch.distributions.Distribution over [B, T, N]
+        """
+        B, T, N, F = x.shape
+
+        h_in = self.to_seq(x)
+
+        ids = repeat(torch.arange(N, device=x.device), 'n -> b n', b=B)
+        ids = rearrange(ids, 'b n -> (b n)')
+
+        emb = self.station_emb(ids)
+        emb = emb.unsqueeze(1).expand(-1, T, -1)
+
+        # project inputs + add station embedding
+        h_proj = self.input_proj(h_in) + emb
+
+        h_out, _ = self.gru(h_proj)
+        h_out = self.ln(h_out)
+
+        # temporal self-attention
+        attn_out, _ = self.attn(h_out, h_out, h_out)
+        h_temp = h_out + attn_out
+
+        # gated residual skip
+        gate = torch.sigmoid(self.gate(h_temp))
+        skip = self.skip_proj(h_in)
+        h_res = gate * h_temp + (1 - gate) * skip
+        le = repeat(torch.arange(T, device=h_res.device), 't -> (b n) t', b=B, n=N)
+        h_res = h_res + self.horizon_emb(le)
+
+
+        h_final = self.from_seq(h_res)
+
+
+        h2 = rearrange(h_final, 'b t n h -> (b t) n h')
+        attn_stat, _ = self.station_attn(h2, h2, h2)
+        attn_stat = rearrange(attn_stat, '(b t) n h -> b t n h', b=B, t=T)
+
+        h_final = h_final + attn_stat
+
+        h_final = self.from_seq(h_res)
+
+        return self.output_distr(h_final)
+
+

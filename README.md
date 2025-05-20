@@ -60,6 +60,8 @@ python train.py ++training.optim.algo=SDG
 
 4. **Train Specific Model**
 
+EnhancedGRUBaseline
+
 EnhancedBiDirectionalSTGNN: (targets.nc and features.nc in folder GraphDL-Postprocess-USI-Project)
 
 ```sh
@@ -68,6 +70,8 @@ export DATA_BASE_FOLDER=../
 export MLFLOW_TRACKING_URI=mlflow    
 python train.py --config-name enhanced_bidirectional_rnn
 ```
+
+EnhancedTCNGNN
 
 MultiScaleGraphWaveNet
 
